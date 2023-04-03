@@ -17,6 +17,7 @@ from radiance_fields.ngp import NGPRadianceField
 from utils import (
     MIPNERF360_UNBOUNDED_SCENES,
     NERF_SYNTHETIC_SCENES,
+    KUBRIC360_SCENES,
     enlarge_aabb,
     render_image,
     set_random_seed,
@@ -43,7 +44,7 @@ parser.add_argument(
     "--scene",
     type=str,
     default="lego",
-    choices=NERF_SYNTHETIC_SCENES + MIPNERF360_UNBOUNDED_SCENES,
+    choices=NERF_SYNTHETIC_SCENES + MIPNERF360_UNBOUNDED_SCENES + KUBRIC360_SCENES,
     help="which scene to use",
 )
 parser.add_argument(
@@ -51,12 +52,40 @@ parser.add_argument(
     type=int,
     default=8192,
 )
+parser.add_argument(
+    "--checkpoint",
+    type=str,
+    default=None,
+)
 args = parser.parse_args()
 
 device = "cuda:0"
 set_random_seed(42)
 
-if args.scene in MIPNERF360_UNBOUNDED_SCENES:
+if args.scene in KUBRIC360_SCENES:
+    from datasets.nerf_kubric360 import SubjectLoader
+
+    # training parameters
+    max_steps = 20000
+    init_batch_size = 1024
+    target_sample_batch_size = 1 << 18
+    weight_decay = 0.0
+    # scene parameters
+    aabb = torch.tensor([-1.0, -1.0, -1.0, 1.0, 1.0, 1.0], device=device)
+    near_plane = 0.02
+    far_plane = None
+    # dataset parameters
+    train_dataset_kwargs = {"color_bkgd_aug": "random", "factor": 4}
+    test_dataset_kwargs = {"factor": 4}
+    # model parameters
+    grid_resolution = 128
+    grid_nlvl = 4
+    # render parameters
+    render_step_size = 1e-3
+    alpha_thre = 1e-2
+    cone_angle = 0.004
+
+elif args.scene in MIPNERF360_UNBOUNDED_SCENES:
     from datasets.nerf_360_v2 import SubjectLoader
 
     # training parameters
@@ -151,6 +180,14 @@ occupancy_grid = OccupancyGrid(
     roi_aabb=aabb, resolution=grid_resolution, levels=grid_nlvl
 ).to(device)
 
+if args.checkpoint is not None:
+    checkpoint = torch.load(args.checkpoint)
+    radiance_field.load_state_dict(checkpoint["radiance_field"])
+    optimizer.load_state_dict(checkpoint["optimizer"])
+    scheduler.load_state_dict(checkpoint["scheduler"])
+    occupancy_grid.load_state_dict(checkpoint["occupancy_grid"])
+    max_steps = 1
+
 lpips_net = LPIPS(net="vgg").to(device)
 lpips_norm_fn = lambda x: x[None, ...].permute(0, 3, 1, 2) * 2 - 1
 lpips_fn = lambda x, y: lpips_net(lpips_norm_fn(x), lpips_norm_fn(y)).mean()
@@ -192,6 +229,7 @@ for step in range(max_steps + 1):
         alpha_thre=alpha_thre,
     )
     if n_rendering_samples == 0:
+        print("skip this step because no rays are rendered.")
         continue
 
     if target_sample_batch_size > 0:
@@ -254,17 +292,33 @@ for step in range(max_steps + 1):
                 psnr = -10.0 * torch.log(mse) / np.log(10.0)
                 psnrs.append(psnr.item())
                 lpips.append(lpips_fn(rgb, pixels).item())
-                # if i == 0:
-                #     imageio.imwrite(
-                #         "rgb_test.png",
-                #         (rgb.cpu().numpy() * 255).astype(np.uint8),
-                #     )
-                #     imageio.imwrite(
-                #         "rgb_error.png",
-                #         (
-                #             (rgb - pixels).norm(dim=-1).cpu().numpy() * 255
-                #         ).astype(np.uint8),
-                #     )
+                if i == 0:
+                    imageio.imwrite(
+                        "rgb_test.png",
+                        (rgb.cpu().numpy() * 255).astype(np.uint8),
+                    )
+                    imageio.imwrite(
+                        "depth_test.png",
+                        ((depth / depth.max()).cpu().numpy() * 255).astype(np.uint8),
+                    )
+                    imageio.imwrite(
+                        "rgb_error.png",
+                        (
+                            (rgb - pixels).norm(dim=-1).cpu().numpy() * 255
+                        ).astype(np.uint8),
+                    )
         psnr_avg = sum(psnrs) / len(psnrs)
         lpips_avg = sum(lpips) / len(lpips)
         print(f"evaluation: psnr_avg={psnr_avg}, lpips_avg={lpips_avg}")
+
+        # save model
+        torch.save(
+            {
+                "radiance_field": radiance_field.state_dict(),
+                "occupancy_grid": occupancy_grid.state_dict(),
+                "optimizer": optimizer.state_dict(),
+                "scheduler": scheduler.state_dict(),
+                "grad_scaler": grad_scaler.state_dict(),
+            },
+            f"model_{step}.pth",
+        )
