@@ -119,4 +119,6 @@ venv.bak/
 
 benchmarks/
 outputs/
+output/
 data
+checkpoint/

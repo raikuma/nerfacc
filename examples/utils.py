@@ -32,7 +32,7 @@ MIPNERF360_UNBOUNDED_SCENES = [
     "room",
     "stump",
 ]
-KUBRIC360_SCENES = list(map(str, range(1, 101)))
+KUBRIC360_SCENES = list(map(str, range(1, 301)))
 
 
 def set_random_seed(seed):

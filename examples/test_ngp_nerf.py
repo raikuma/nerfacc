@@ -145,7 +145,7 @@ train_dataset = SubjectLoader(
 test_dataset = SubjectLoader(
     subject_id=args.scene,
     root_fp=args.data_root,
-    split="test",
+    split="testtrain",
     num_rays=None,
     device=device,
     **test_dataset_kwargs,
@@ -195,72 +195,75 @@ lpips_fn = lambda x, y: lpips_net(lpips_norm_fn(x), lpips_norm_fn(y)).mean()
 # training
 tic = time.time()
 for step in range(max_steps + 1):
-    radiance_field.train()
+    # radiance_field.train()
 
-    i = torch.randint(0, len(train_dataset), (1,)).item()
-    data = train_dataset[i]
+    # i = torch.randint(0, len(train_dataset), (1,)).item()
+    # data = train_dataset[i]
 
-    render_bkgd = data["color_bkgd"]
-    rays = data["rays"]
-    pixels = data["pixels"]
+    # render_bkgd = data["color_bkgd"]
+    # rays = data["rays"]
+    # pixels = data["pixels"]
 
-    def occ_eval_fn(x):
-        density = radiance_field.query_density(x)
-        return density * render_step_size
+    # def occ_eval_fn(x):
+    #     density = radiance_field.query_density(x)
+    #     return density * render_step_size
 
-    # update occupancy grid
-    occupancy_grid.every_n_step(
-        step=step,
-        occ_eval_fn=occ_eval_fn,
-        occ_thre=1e-2,
-    )
+    # # update occupancy grid
+    # occupancy_grid.every_n_step(
+    #     step=step,
+    #     occ_eval_fn=occ_eval_fn,
+    #     occ_thre=1e-2,
+    # )
 
-    # render
-    rgb, acc, depth, n_rendering_samples = render_image(
-        radiance_field,
-        occupancy_grid,
-        rays,
-        scene_aabb=scene_aabb,
-        # rendering options
-        near_plane=near_plane,
-        render_step_size=render_step_size,
-        render_bkgd=render_bkgd,
-        cone_angle=cone_angle,
-        alpha_thre=alpha_thre,
-    )
-    if n_rendering_samples == 0:
-        print("skip this step because no rays are rendered.")
-        continue
+    # # render
+    # rgb, acc, depth, n_rendering_samples = render_image(
+    #     radiance_field,
+    #     occupancy_grid,
+    #     rays,
+    #     scene_aabb=scene_aabb,
+    #     # rendering options
+    #     near_plane=near_plane,
+    #     render_step_size=render_step_size,
+    #     render_bkgd=render_bkgd,
+    #     cone_angle=cone_angle,
+    #     alpha_thre=alpha_thre,
+    # )
+    # if n_rendering_samples == 0:
+    #     print("skip this step because no rays are rendered.")
+    #     continue
 
-    if target_sample_batch_size > 0:
-        # dynamic batch size for rays to keep sample batch size constant.
-        num_rays = len(pixels)
-        num_rays = int(
-            num_rays * (target_sample_batch_size / float(n_rendering_samples))
-        )
-        train_dataset.update_num_rays(num_rays)
+    # if target_sample_batch_size > 0:
+    #     # dynamic batch size for rays to keep sample batch size constant.
+    #     num_rays = len(pixels)
+    #     num_rays = int(
+    #         num_rays * (target_sample_batch_size / float(n_rendering_samples))
+    #     )
+    #     train_dataset.update_num_rays(num_rays)
 
-    # compute loss
-    loss = F.smooth_l1_loss(rgb, pixels)
+    # # compute loss
+    # loss = F.smooth_l1_loss(rgb, pixels)
 
-    optimizer.zero_grad()
-    # do not unscale it because we are using Adam.
-    grad_scaler.scale(loss).backward()
-    optimizer.step()
-    scheduler.step()
+    # optimizer.zero_grad()
+    # # do not unscale it because we are using Adam.
+    # grad_scaler.scale(loss).backward()
+    # optimizer.step()
+    # scheduler.step()
 
-    if step % 5000 == 0:
-        elapsed_time = time.time() - tic
-        loss = F.mse_loss(rgb, pixels)
-        psnr = -10.0 * torch.log(loss) / np.log(10.0)
-        print(
-            f"elapsed_time={elapsed_time:.2f}s | step={step} | "
-            f"loss={loss:.5f} | psnr={psnr:.2f} | "
-            f"n_rendering_samples={n_rendering_samples:d} | num_rays={len(pixels):d} | "
-            f"max_depth={depth.max():.3f} | "
-        )
+    # if step % 5000 == 0:
+    #     elapsed_time = time.time() - tic
+    #     loss = F.mse_loss(rgb, pixels)
+    #     psnr = -10.0 * torch.log(loss) / np.log(10.0)
+    #     print(
+    #         f"elapsed_time={elapsed_time:.2f}s | step={step} | "
+    #         f"loss={loss:.5f} | psnr={psnr:.2f} | "
+    #         f"n_rendering_samples={n_rendering_samples:d} | num_rays={len(pixels):d} | "
+    #         f"max_depth={depth.max():.3f} | "
+    #     )
 
     if step > 0 and step % max_steps == 0:
+        import os
+        os.makedirs(f"/scratch/woongohcho/output2/{args.scene}", exist_ok=True)
+
         # evaluation
         radiance_field.eval()
 
@@ -292,33 +295,37 @@ for step in range(max_steps + 1):
                 psnr = -10.0 * torch.log(mse) / np.log(10.0)
                 psnrs.append(psnr.item())
                 lpips.append(lpips_fn(rgb, pixels).item())
-                if i == 0:
-                    imageio.imwrite(
-                        f"output/{args.scene}_rgb_test.png",
-                        (rgb.cpu().numpy() * 255).astype(np.uint8),
-                    )
-                    imageio.imwrite(
-                        f"output/{args.scene}_depth_test.png",
-                        ((depth / depth.max()).cpu().numpy() * 255).astype(np.uint8),
-                    )
-                    imageio.imwrite(
-                        f"output/{args.scene}_rgb_error.png",
-                        (
-                            (rgb - pixels).norm(dim=-1).cpu().numpy() * 255
-                        ).astype(np.uint8),
-                    )
+
+                imageio.imwrite(
+                    f"/scratch/woongohcho/output2/{args.scene}/{i}_rgb_gt.png",
+                    (pixels.cpu().numpy() * 255).astype(np.uint8),
+                )
+                imageio.imwrite(
+                    f"/scratch/woongohcho/output2/{args.scene}/{i}_rgb_test.png",
+                    (rgb.cpu().numpy() * 255).astype(np.uint8),
+                )
+                imageio.imwrite(
+                    f"/scratch/woongohcho/output2/{args.scene}/{i}_depth_test.png",
+                    ((depth / depth.max()).cpu().numpy() * 255).astype(np.uint8),
+                )
+                imageio.imwrite(
+                    f"/scratch/woongohcho/output2/{args.scene}/{i}_rgb_error.png",
+                    (
+                        (rgb - pixels).norm(dim=-1).cpu().numpy() * 255
+                    ).astype(np.uint8),
+                )
         psnr_avg = sum(psnrs) / len(psnrs)
         lpips_avg = sum(lpips) / len(lpips)
         print(f"evaluation: psnr_avg={psnr_avg}, lpips_avg={lpips_avg}")
 
         # save model
-        torch.save(
-            {
-                "radiance_field": radiance_field.state_dict(),
-                "occupancy_grid": occupancy_grid.state_dict(),
-                "optimizer": optimizer.state_dict(),
-                "scheduler": scheduler.state_dict(),
-                "grad_scaler": grad_scaler.state_dict(),
-            },
-            f"checkpoint/{args.scene}_model_{step}.pth",
-        )
+        # torch.save(
+        #     {
+        #         "radiance_field": radiance_field.state_dict(),
+        #         "occupancy_grid": occupancy_grid.state_dict(),
+        #         "optimizer": optimizer.state_dict(),
+        #         "scheduler": scheduler.state_dict(),
+        #         "grad_scaler": grad_scaler.state_dict(),
+        #     },
+        #     f"checkpoint/{args.scene}_model_{step}.pth",
+        # )

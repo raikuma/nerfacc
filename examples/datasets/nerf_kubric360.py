@@ -91,6 +91,8 @@ class SubjectLoader(Dataset):
             idx = list(range(9, 15+1)) + list(range(76-1, 82))
         # elif self.split == "all":
         #     idx = list(range(9, 82))
+        elif self.split == "testtrain":
+            idx = list(range(15, 76, 1))
         else:
             raise ValueError("Invalid split")
         self.camtoworlds = data["camtoworlds"][idx]
